@@ -5030,4 +5030,30 @@ mod verify {
         u128::MAX - 0xFFFFu128,
         u128::MAX
     );
+
+    mod ilog2 {
+        use crate::kani;
+        use crate::num::verify::logarithms::{assert_ilog2_correctness, inputs};
+
+        // Check the logarithm for every valid NonZero input of each unsigned type.
+        macro_rules! nonzero_ilog2_proof {
+            ($ty:ident) => {
+                mod $ty {
+                    use super::*;
+
+                    #[kani::proof]
+                    fn correctness() {
+                        let value = inputs::$ty::arbitrary();
+                        assert_ilog2_correctness(value.get() as u128, value.ilog2());
+                    }
+                }
+            };
+        }
+        nonzero_ilog2_proof!(u8);
+        nonzero_ilog2_proof!(u16);
+        nonzero_ilog2_proof!(u32);
+        nonzero_ilog2_proof!(u64);
+        nonzero_ilog2_proof!(u128);
+        nonzero_ilog2_proof!(usize);
+    }
 }
