@@ -5030,4 +5030,215 @@ mod verify {
         u128::MAX - 0xFFFFu128,
         u128::MAX
     );
+
+    mod bit_scanning {
+        use super::*;
+
+        mod inputs {
+            use super::*;
+
+            // Generate nonzero values without calling NonZero::new.
+            // This avoids recursion when Kani generates results for the constructor contract.
+            macro_rules! define_nonzero_generator_and_proof {
+                ($ty:ident) => {
+                    pub(super) mod $ty {
+                        use super::*;
+
+                        fn to_nonzero(value: $ty) -> NonZero<$ty> {
+                            kani::assume(value != 0);
+                            // SAFETY: NonZero<T> has T's documented layout, and value is nonzero.
+                            unsafe { crate::mem::transmute(value) }
+                        }
+
+                        pub(crate) fn arbitrary() -> NonZero<$ty> {
+                            to_nonzero(kani::any())
+                        }
+
+                        // Converting to NonZero preserves the integer value.
+                        #[kani::proof]
+                        fn preserves_value() {
+                            let value: $ty = kani::any();
+                            let converted = to_nonzero(value);
+                            kani::cover(true, "a nonzero input exists");
+                            assert!(converted.get() == value);
+                        }
+                    }
+                };
+            }
+            define_nonzero_generator_and_proof!(i8);
+            define_nonzero_generator_and_proof!(i16);
+            define_nonzero_generator_and_proof!(i32);
+            define_nonzero_generator_and_proof!(i64);
+            define_nonzero_generator_and_proof!(i128);
+            define_nonzero_generator_and_proof!(isize);
+
+            define_nonzero_generator_and_proof!(u8);
+            define_nonzero_generator_and_proof!(u16);
+            define_nonzero_generator_and_proof!(u32);
+            define_nonzero_generator_and_proof!(u64);
+            define_nonzero_generator_and_proof!(u128);
+            define_nonzero_generator_and_proof!(usize);
+        }
+
+        // Reuse NonZero::new's verified contract when a method constructs its result.
+        macro_rules! nonzero_proof {
+            (fn $name:ident() $body:block) => {
+                #[kani::proof]
+                #[kani::stub_verified(NonZero::new)]
+                #[kani::stub(<NonZero<i8> as kani::Arbitrary>::any, inputs::i8::arbitrary)]
+                #[kani::stub(<NonZero<i16> as kani::Arbitrary>::any, inputs::i16::arbitrary)]
+                #[kani::stub(<NonZero<i32> as kani::Arbitrary>::any, inputs::i32::arbitrary)]
+                #[kani::stub(<NonZero<i64> as kani::Arbitrary>::any, inputs::i64::arbitrary)]
+                #[kani::stub(<NonZero<i128> as kani::Arbitrary>::any, inputs::i128::arbitrary)]
+                #[kani::stub(<NonZero<isize> as kani::Arbitrary>::any, inputs::isize::arbitrary)]
+
+                #[kani::stub(<NonZero<u8> as kani::Arbitrary>::any, inputs::u8::arbitrary)]
+                #[kani::stub(<NonZero<u16> as kani::Arbitrary>::any, inputs::u16::arbitrary)]
+                #[kani::stub(<NonZero<u32> as kani::Arbitrary>::any, inputs::u32::arbitrary)]
+                #[kani::stub(<NonZero<u64> as kani::Arbitrary>::any, inputs::u64::arbitrary)]
+                #[kani::stub(<NonZero<u128> as kani::Arbitrary>::any, inputs::u128::arbitrary)]
+                #[kani::stub(<NonZero<usize> as kani::Arbitrary>::any, inputs::usize::arbitrary)]
+                fn $name() $body
+            };
+        }
+
+        // Moving the highest set bit to position zero must leave exactly 1.
+        fn assert_highest_one_correctness(value: u128, result: u32, bits: u32) {
+            assert!(result < bits);
+            assert!(value >> result == 1);
+        }
+
+        // The claimed bit is set, and every lower bit is zero.
+        fn assert_lowest_one_correctness(value: u128, result: u32, bits: u32) {
+            assert!(result < bits);
+            let bit = 1u128 << result;
+            assert!(value & bit == bit);
+            assert!(value & (bit - 1) == 0);
+        }
+
+        // The result contains one input bit, with no input bits above it.
+        fn assert_isolate_highest_one_correctness(value: u128, result: u128) {
+            assert!(result != 0);
+            assert!(result & (result - 1) == 0);
+            assert!(value & result == result);
+            assert!((value ^ result) < result);
+        }
+
+        // The result contains one input bit, with no input bits below it.
+        fn assert_isolate_lowest_one_correctness(value: u128, result: u128) {
+            assert!(result != 0);
+            assert!(result & (result - 1) == 0);
+            assert!(value & result == result);
+            assert!(value & (result - 1) == 0);
+        }
+
+        macro_rules! bit_width_proof {
+            ($ty:ident) => {
+                // The width counts bits through the highest 1, excluding leading zeros.
+                nonzero_proof! {
+                    fn bit_width_correctness() {
+                        let input = inputs::$ty::arbitrary();
+                        let width = input.bit_width().get();
+                        assert!(width > 0 && width <= <$ty>::BITS);
+                        assert_highest_one_correctness(input.get() as u128, width - 1, <$ty>::BITS);
+                    }
+                }
+            };
+        }
+
+        // The same-width unsigned cast preserves the original bits without sign extension.
+        // Widening that value to u128 loses no bits.
+        macro_rules! bit_operation_proofs_for_type {
+            ($ty:ident, $unsigned:ty $(, $additional_proof:ident)?) => {
+                mod $ty {
+                    use super::*;
+
+                    // The count skips the leading zeros and stops at the first 1.
+                    #[kani::proof]
+                    fn leading_zeros_correctness() {
+                        let input = inputs::$ty::arbitrary();
+                        let result = input.leading_zeros();
+                        assert!(result < <$ty>::BITS);
+                        assert_highest_one_correctness(
+                            input.get() as $unsigned as u128,
+                            <$ty>::BITS - 1 - result,
+                            <$ty>::BITS,
+                        );
+                    }
+
+                    // The count skips the trailing zeros and stops at the first 1.
+                    #[kani::proof]
+                    fn trailing_zeros_correctness() {
+                        let input = inputs::$ty::arbitrary();
+                        assert_lowest_one_correctness(
+                            input.get() as $unsigned as u128,
+                            input.trailing_zeros(),
+                            <$ty>::BITS,
+                        );
+                    }
+
+                    // The index points to a set bit, with no set bits above it.
+                    #[kani::proof]
+                    fn highest_one_correctness() {
+                        let input = inputs::$ty::arbitrary();
+                        assert_highest_one_correctness(
+                            input.get() as $unsigned as u128,
+                            input.highest_one(),
+                            <$ty>::BITS,
+                        );
+                    }
+
+                    // The index points to a set bit, with no set bits below it.
+                    #[kani::proof]
+                    fn lowest_one_correctness() {
+                        let input = inputs::$ty::arbitrary();
+                        assert_lowest_one_correctness(
+                            input.get() as $unsigned as u128,
+                            input.lowest_one(),
+                            <$ty>::BITS,
+                        );
+                    }
+
+                    // Keep only the input's highest set bit; the result must stay nonzero.
+                    nonzero_proof! {
+                        fn isolate_highest_one_correctness() {
+                            let input = inputs::$ty::arbitrary();
+                            assert_isolate_highest_one_correctness(
+                                input.get() as $unsigned as u128,
+                                input.isolate_highest_one().get() as $unsigned as u128,
+                            );
+                        }
+                    }
+
+                    // Keep only the input's lowest set bit; the result must stay nonzero.
+                    nonzero_proof! {
+                        fn isolate_lowest_one_correctness() {
+                            let input = inputs::$ty::arbitrary();
+                            assert_isolate_lowest_one_correctness(
+                                input.get() as $unsigned as u128,
+                                input.isolate_lowest_one().get() as $unsigned as u128,
+                            );
+                        }
+                    }
+
+                    $($additional_proof!($ty);)?
+                }
+            };
+        }
+
+        macro_rules! bit_scanning_proofs {
+            ($signed:ident, $unsigned:ident) => {
+                bit_operation_proofs_for_type!($signed, $unsigned);
+                bit_operation_proofs_for_type!($unsigned, $unsigned, bit_width_proof);
+            };
+        }
+
+        // Generate the proof harnesses for each signed/unsigned pair.
+        bit_scanning_proofs!(i8, u8);
+        bit_scanning_proofs!(i16, u16);
+        bit_scanning_proofs!(i32, u32);
+        bit_scanning_proofs!(i64, u64);
+        bit_scanning_proofs!(i128, u128);
+        bit_scanning_proofs!(isize, usize);
+    }
 }
