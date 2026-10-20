@@ -1,4 +1,4 @@
-# Challenge 30: Safety and Correctness of NonZero Bit Scanning
+# Challenge 30: Safety and Correctness of NonZero Bit Operations
 
 - **Status:** Open
 - **Solution:** Not yet submitted.
@@ -9,7 +9,8 @@
 
 ## Goal
 
-Verify the safety and correctness of bit-scanning methods in `core::num::NonZero`.
+Verify the safety and correctness of bit operations in `core::num::NonZero`,
+including bit scanning and signedness conversions.
 
 ## Motivation
 
@@ -25,6 +26,8 @@ All methods are defined in [nonzero.rs](https://github.com/model-checking/verify
 | `leading_zeros`, `trailing_zeros`, `isolate_highest_one`, `isolate_lowest_one` | All signed and unsigned types | Safety and correctness |
 | `highest_one`, `lowest_one` | All signed and unsigned types | Correctness of the position returned |
 | `bit_width` | All unsigned types | Safety and correctness |
+| `cast_signed` | All unsigned types | Safety and preservation of the bit pattern |
+| `cast_unsigned` | All signed types | Safety and preservation of the bit pattern |
 
 - **Signed:** `i8`, `i16`, `i32`, `i64`, `i128`, `isize`.
 - **Unsigned:** `u8`, `u16`, `u32`, `u64`, `u128`, `usize`.
@@ -48,6 +51,7 @@ Prove that:
 - `highest_one` and `lowest_one` return the positions of the highest and lowest set bits.
 - Isolation methods return exactly the selected set bit.
 - `bit_width` returns the highest set-bit position plus one.
+- Signedness conversions preserve the bit pattern and produce nonzero results.
 - All unsafe preconditions hold, including nonzero intrinsic inputs, valid shift counts, and nonzero constructed results.
 - Calculations do not overflow or underflow.
 

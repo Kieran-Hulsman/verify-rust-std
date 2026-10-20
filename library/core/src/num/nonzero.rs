@@ -5031,7 +5031,7 @@ mod verify {
         u128::MAX
     );
 
-    mod bit_scanning {
+    mod bit_operations {
         use super::*;
 
         mod inputs {
@@ -5116,22 +5116,6 @@ mod verify {
             assert!(value & (bit - 1) == 0);
         }
 
-        // The result contains one input bit, with no input bits above it.
-        fn assert_isolate_highest_one_correctness(value: u128, result: u128) {
-            assert!(result != 0);
-            assert!(result & (result - 1) == 0);
-            assert!(value & result == result);
-            assert!((value ^ result) < result);
-        }
-
-        // The result contains one input bit, with no input bits below it.
-        fn assert_isolate_lowest_one_correctness(value: u128, result: u128) {
-            assert!(result != 0);
-            assert!(result & (result - 1) == 0);
-            assert!(value & result == result);
-            assert!(value & (result - 1) == 0);
-        }
-
         macro_rules! bit_width_proof {
             ($ty:ident) => {
                 // The width counts bits through the highest 1, excluding leading zeros.
@@ -5149,7 +5133,7 @@ mod verify {
         // The same-width unsigned cast preserves the original bits without sign extension.
         // Widening that value to u128 loses no bits.
         macro_rules! bit_operation_proofs_for_type {
-            ($ty:ident, $unsigned:ty $(, $additional_proof:ident)?) => {
+            ($ty:ident, $unsigned:ty, $converted:ty, $conversion:ident $(, $additional_proof:ident)?) => {
                 mod $ty {
                     use super::*;
 
@@ -5203,10 +5187,12 @@ mod verify {
                     nonzero_proof! {
                         fn isolate_highest_one_correctness() {
                             let input = inputs::$ty::arbitrary();
-                            assert_isolate_highest_one_correctness(
-                                input.get() as $unsigned as u128,
-                                input.isolate_highest_one().get() as $unsigned as u128,
-                            );
+                            let value = input.get() as $unsigned as u128;
+                            let result = input.isolate_highest_one().get() as $unsigned as u128;
+                            assert!(result != 0);
+                            assert!(result & (result - 1) == 0);
+                            assert!(value & result == result);
+                            assert!((value ^ result) < result);
                         }
                     }
 
@@ -5214,10 +5200,22 @@ mod verify {
                     nonzero_proof! {
                         fn isolate_lowest_one_correctness() {
                             let input = inputs::$ty::arbitrary();
-                            assert_isolate_lowest_one_correctness(
-                                input.get() as $unsigned as u128,
-                                input.isolate_lowest_one().get() as $unsigned as u128,
-                            );
+                            let value = input.get() as $unsigned as u128;
+                            let result = input.isolate_lowest_one().get() as $unsigned as u128;
+                            assert!(result != 0);
+                            assert!(result & (result - 1) == 0);
+                            assert!(value & result == result);
+                            assert!(value & (result - 1) == 0);
+                        }
+                    }
+
+                    // Changing signedness preserves every bit and cannot produce zero.
+                    nonzero_proof! {
+                        fn $conversion() {
+                            let input = inputs::$ty::arbitrary();
+                            let result = input.$conversion().get();
+                            assert!(result != 0);
+                            assert!(result == input.get() as $converted);
                         }
                     }
 
@@ -5226,19 +5224,23 @@ mod verify {
             };
         }
 
-        macro_rules! bit_scanning_proofs {
+        macro_rules! bit_operation_proofs {
             ($signed:ident, $unsigned:ident) => {
-                bit_operation_proofs_for_type!($signed, $unsigned);
-                bit_operation_proofs_for_type!($unsigned, $unsigned, bit_width_proof);
+                // Prove signed bit scanning and conversion to the matching unsigned type.
+                bit_operation_proofs_for_type!($signed, $unsigned, $unsigned, cast_unsigned);
+                // Prove unsigned bit scanning, conversion to the matching signed type, and bit width.
+                bit_operation_proofs_for_type!(
+                    $unsigned, $unsigned, $signed, cast_signed, bit_width_proof
+                );
             };
         }
 
         // Generate the proof harnesses for each signed/unsigned pair.
-        bit_scanning_proofs!(i8, u8);
-        bit_scanning_proofs!(i16, u16);
-        bit_scanning_proofs!(i32, u32);
-        bit_scanning_proofs!(i64, u64);
-        bit_scanning_proofs!(i128, u128);
-        bit_scanning_proofs!(isize, usize);
+        bit_operation_proofs!(i8, u8);
+        bit_operation_proofs!(i16, u16);
+        bit_operation_proofs!(i32, u32);
+        bit_operation_proofs!(i64, u64);
+        bit_operation_proofs!(i128, u128);
+        bit_operation_proofs!(isize, usize);
     }
 }
