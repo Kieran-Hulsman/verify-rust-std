@@ -204,7 +204,7 @@ impl<const N: usize, ESCAPING> EscapeIterInner<N, ESCAPING> {
 
         // Check bounds, which implicitly also checks the invariant
         // `alive.end <= Self::LITERAL_ESCAPE_START`.
-        debug_assert!(alive.end <= (N + 1) as u8);
+        debug_assert!(alive.start <= alive.end && alive.end as usize <= N);
 
         Self { data, alive, escaping: PhantomData }
     }
@@ -243,11 +243,6 @@ impl<const N: usize, ESCAPING> EscapeIterInner<N, ESCAPING> {
         self.alive.advance_by(n)
     }
 
-    #[inline]
-    pub(crate) fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
-        self.alive.advance_back_by(n)
-    }
-
     /// Returns a `char` if `self.data` contains one in its `literal` variant.
     #[inline]
     const fn to_char(&self) -> Option<char> {
@@ -284,6 +279,13 @@ impl<const N: usize, ESCAPING> EscapeIterInner<N, ESCAPING> {
 }
 
 impl<const N: usize> EscapeIterInner<N, AlwaysEscaped> {
+    // Only for `AlwaysEscaped`: on a `MaybeEscaped` literal, moving `alive.end` below
+    // `LITERAL_ESCAPE_START` would make the `literal` variant be read as `escape_seq`.
+    #[inline]
+    pub(crate) fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
+        self.alive.advance_back_by(n)
+    }
+
     pub(crate) fn next(&mut self) -> Option<u8> {
         let i = self.alive.next()?;
 
@@ -346,7 +348,9 @@ impl<const N: usize> fmt::Display for EscapeIterInner<N, AlwaysEscaped> {
 impl<const N: usize> fmt::Display for EscapeIterInner<N, MaybeEscaped> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(c) = self.to_char() {
-            return f.write_char(c);
+            // `next` only advances `alive.start`, so the literal stays in `data` after it
+            // has been yielded.
+            return if self.alive.is_empty() { Ok(()) } else { f.write_char(c) };
         }
 
         // SAFETY: At this point, `self.data` must contain printable ASCII
