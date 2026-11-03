@@ -169,3 +169,71 @@ define_signed_ilog10! {
 pub(in crate::num) const fn panic_for_nonpositive_argument() -> ! {
     panic!("argument of integer logarithm must be positive")
 }
+
+#[cfg(kani)]
+pub(in crate::num) mod proof_support {
+    // Reference implementation of the decimal logarithm.
+    pub(in crate::num) fn expected_ilog10(value: u128) -> u32 {
+        let mut power = 1;
+        let mut result = 0;
+        while power <= value / 10 {
+            power *= 10;
+            result += 1;
+        }
+        result
+    }
+}
+
+#[cfg(kani)]
+mod verify {
+    use super::proof_support::expected_ilog10;
+    use super::*;
+    use crate::kani;
+    use crate::num::verify::logarithms::{inputs, nonzero_proof};
+
+    macro_rules! proofs_for_type {
+        ($ty:ident, $implementation:ident) => {
+            mod $ty {
+                use super::*;
+
+                // Check the calculation against the reference for every positive input.
+                #[kani::proof]
+                fn correctness() {
+                    let value: $ty = kani::any();
+                    kani::assume(value > 0);
+                    assert!(super::super::$implementation(value) == expected_ilog10(value as u128));
+                }
+
+                // Check that the logarithm result satisfies the bound assumed by assert_unchecked.
+                #[kani::proof]
+                fn bounds() {
+                    let input = inputs::$ty::arbitrary();
+                    assert!(super::super::$ty(input) == expected_ilog10(input.get() as u128));
+                }
+            }
+        };
+    }
+
+    proofs_for_type!(u8, u8_impl);
+    proofs_for_type!(u16, u16_impl);
+    proofs_for_type!(u32, u32_impl);
+    proofs_for_type!(u64, u64_impl);
+    proofs_for_type!(u128, u128_impl);
+
+    // Kani supports only 64-bit targets, so the 16- and 32-bit usize branches remain unverified.
+    // Their underlying u16 and u32 implementations are verified separately.
+    nonzero_proof! {
+        fn usize_bounds() {
+            let input = inputs::usize::arbitrary();
+            assert!(super::usize(input) == expected_ilog10(input.get() as u128));
+        }
+    }
+
+    // Check the small-value calculation over its required domain: 1 through 99,999.
+    #[kani::proof]
+    fn less_than_5_correctness() {
+        let value: u32 = kani::any();
+        kani::assume(value > 0 && value < 100_000);
+        assert!(super::less_than_5(value) == expected_ilog10(value as u128));
+    }
+}

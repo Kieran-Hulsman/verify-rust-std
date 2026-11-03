@@ -2432,4 +2432,156 @@ mod verify {
 
         assert_eq!(result, num1 as i128);
     }
+
+    pub(super) mod logarithms {
+        use super::*;
+        use crate::kani;
+        use crate::num::imp::int_log10::proof_support::expected_ilog10;
+
+        fn assert_ilog10_correctness(value: u128, result: u32) {
+            assert!(result == expected_ilog10(value));
+        }
+
+        pub(in crate::num) fn assert_ilog2_correctness(value: u128, result: u32) {
+            assert!(result < u128::BITS);
+            assert!(value >> result == 1);
+        }
+
+        pub(in crate::num) mod inputs {
+            use super::*;
+
+            // Provide arbitrary NonZero results when Kani uses the NonZero::new contract.
+            // Create them directly so generating a result does not call the constructor again.
+            macro_rules! define_nonzero_generator_and_proof {
+                ($ty:ident) => {
+                    pub(in crate::num) mod $ty {
+                        use super::*;
+
+                        fn to_nonzero(value: $ty) -> NonZero<$ty> {
+                            kani::assume(value != 0);
+                            // SAFETY: NonZero<T> has the layout of T, and value is nonzero.
+                            unsafe { crate::mem::transmute(value) }
+                        }
+
+                        pub(in crate::num) fn arbitrary() -> NonZero<$ty> {
+                            to_nonzero(kani::any())
+                        }
+
+                        #[kani::proof]
+                        fn prove_to_nonzero() {
+                            let value: $ty = kani::any();
+                            kani::assume(value != 0);
+                            assert!(to_nonzero(value).get() == value);
+                        }
+                    }
+                };
+            }
+            define_nonzero_generator_and_proof!(u8);
+            define_nonzero_generator_and_proof!(u16);
+            define_nonzero_generator_and_proof!(u32);
+            define_nonzero_generator_and_proof!(u64);
+            define_nonzero_generator_and_proof!(u128);
+            define_nonzero_generator_and_proof!(usize);
+        }
+
+        // Add #[kani::proof] to the generated function.
+        macro_rules! proof {
+            ($(#[$attr:meta])* fn $name:ident() $body:block) => {
+                #[kani::proof]
+                $(#[$attr])*
+                fn $name() $body
+            };
+        }
+
+        // Reuse the separately verified NonZero::new contract with nonzero return generators.
+        // The generators rely on the documented NonZero layout.
+        macro_rules! nonzero_proof {
+            ($(#[$attr:meta])* fn $name:ident() $body:block) => {
+                #[kani::proof]
+                #[kani::stub_verified(NonZero::new)]
+                #[kani::stub(<NonZero<u8> as kani::Arbitrary>::any, inputs::u8::arbitrary)]
+                #[kani::stub(<NonZero<u16> as kani::Arbitrary>::any, inputs::u16::arbitrary)]
+                #[kani::stub(<NonZero<u32> as kani::Arbitrary>::any, inputs::u32::arbitrary)]
+                #[kani::stub(<NonZero<u64> as kani::Arbitrary>::any, inputs::u64::arbitrary)]
+                #[kani::stub(<NonZero<u128> as kani::Arbitrary>::any, inputs::u128::arbitrary)]
+                #[kani::stub(<NonZero<usize> as kani::Arbitrary>::any, inputs::usize::arbitrary)]
+                $(#[$attr])*
+                fn $name() $body
+            };
+        }
+
+        macro_rules! logarithm_proofs_for_type {
+            ($ty:ident, $method:ident, $checked_method:ident, $assert_result:path, $proof:ident) => {
+                mod $ty {
+                    use super::*;
+
+                    // Positive inputs return Some(correct result); zero and negative inputs return None.
+                    $proof! {
+                        fn checked_result() {
+                            let value: $ty = kani::any();
+                            let result = value.$checked_method();
+                            if value > 0 {
+                                assert!(result.is_some());
+                                $assert_result(value as u128, result.unwrap());
+                            } else {
+                                assert!(result.is_none());
+                            }
+                        }
+                    }
+
+                    // Positive inputs return the correct logarithm.
+                    $proof! {
+                        fn valid_input() {
+                            let value: $ty = kani::any();
+                            kani::assume(value > 0);
+                            $assert_result(value as u128, value.$method());
+                        }
+                    }
+
+                    // Zero and negative inputs cause a panic.
+                    $proof! {
+                        #[kani::should_panic]
+                        fn invalid_input() {
+                            let value: $ty = kani::any();
+                            kani::assume(value <= 0);
+                            let _ = value.$method();
+                            kani::assert(false, "integer logarithm returned for a nonpositive input");
+                        }
+                    }
+                }
+            };
+        }
+
+        macro_rules! logarithm_proofs_for_types {
+            ($method:ident, $checked_method:ident, $assert_result:path, $proof:ident;
+                $($ty:ident),+ $(,)?
+            ) => {
+                $(logarithm_proofs_for_type!($ty, $method, $checked_method, $assert_result, $proof);)+
+            };
+        }
+
+        // Generate the proofs for all signed and unsigned integer types.
+        macro_rules! logarithm_proofs {
+            ($assert_result:path, $method:ident, $checked_method:ident) => {
+                mod $method {
+                    use super::*;
+
+                    logarithm_proofs_for_types! {
+                        $method, $checked_method, $assert_result, proof;
+                        i8, i16, i32, i64, i128, isize
+                    }
+                    logarithm_proofs_for_types! {
+                        $method, $checked_method, $assert_result, nonzero_proof;
+                        u8, u16, u32, u64, u128, usize
+                    }
+                }
+            };
+        }
+
+        pub(in crate::num) use {nonzero_proof, proof};
+
+        // Generate the logarithm proof harnesses for all integer types.
+        logarithm_proofs!(assert_ilog10_correctness, ilog10, checked_ilog10);
+        logarithm_proofs!(assert_ilog2_correctness, ilog2, checked_ilog2);
+    }
 }
