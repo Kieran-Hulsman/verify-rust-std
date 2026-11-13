@@ -145,10 +145,14 @@
 
 use core::alloc::Allocator;
 use core::iter::{FusedIterator, InPlaceIterable, SourceIter, TrustedFused, TrustedLen};
+#[cfg(kani)]
+use core::kani;
 use core::mem::{self, ManuallyDrop, swap};
 use core::num::NonZero;
 use core::ops::{Deref, DerefMut};
 use core::{fmt, ptr};
+
+use safety::{ensures, requires};
 
 use crate::alloc::{AllocatorNightly, Global};
 use crate::collections::TryReserveError;
@@ -772,6 +776,9 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
     #[stable(feature = "binary_heap_extras_15", since = "1.5.0")]
     pub fn into_sorted_vec(mut self) -> Vec<T, A> {
         let mut end = self.len();
+        #[safety::loop_invariant(end <= self.data.len())]
+        #[cfg_attr(kani, kani::loop_modifies(&end, self.elems()))]
+        #[cfg_attr(kani, kani::loop_decreases(end))]
         while end > 1 {
             end -= 1;
             // SAFETY: `end` goes from `self.len() - 1` to 1 (both included),
@@ -804,11 +811,17 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
     /// The caller must guarantee that `pos < self.len()`.
     ///
     /// Returns the new position of the element.
+    #[requires(pos < self.len())]
+    #[ensures(|new_pos: &usize| *new_pos <= pos)]
+    #[cfg_attr(kani, kani::modifies(self.elems()))]
     unsafe fn sift_up(&mut self, start: usize, pos: usize) -> usize {
         // Take out the value at `pos` and create a hole.
         // SAFETY: The caller guarantees that pos < self.len()
         let mut hole = unsafe { Hole::new(&mut self.data, pos) };
 
+        #[safety::loop_invariant(hole.pos <= pos && pos < hole.data.len())]
+        #[cfg_attr(kani, kani::loop_modifies(&hole.pos, &hole.elt, hole.slots()))]
+        #[cfg_attr(kani, kani::loop_decreases(hole.pos))]
         while hole.pos() > start {
             let parent = (hole.pos() - 1) / 2;
 
@@ -835,12 +848,18 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
     /// # Safety
     ///
     /// The caller must guarantee that `pos < end <= self.len()`.
+    #[requires(pos < end && end <= self.len())]
+    #[ensures(|new_pos: &usize| pos <= *new_pos && *new_pos < end)]
+    #[cfg_attr(kani, kani::modifies(self.elems()))]
     unsafe fn sift_down_range(&mut self, pos: usize, end: usize) -> usize {
         // SAFETY: The caller guarantees that pos < end <= self.len().
         let mut hole = unsafe { Hole::new(&mut self.data, pos) };
         let mut child = 2 * hole.pos() + 1;
 
         // Loop invariant: child == 2 * hole.pos() + 1.
+        #[safety::loop_invariant(pos <= hole.pos && hole.pos < end && end <= hole.data.len()
+            && hole.pos < child && child - hole.pos == hole.pos + 1)]
+        #[cfg_attr(kani, kani::loop_modifies(&hole.pos, &hole.elt, &child, hole.slots()))]
         while child <= end.saturating_sub(2) {
             // compare with the greater of the two children
             // SAFETY: child < end - 1 < self.len() and
@@ -877,6 +896,9 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
     /// # Safety
     ///
     /// The caller must guarantee that `pos < self.len()`.
+    #[requires(pos < self.len())]
+    #[ensures(|new_pos: &usize| pos <= *new_pos && *new_pos < self.len())]
+    #[cfg_attr(kani, kani::modifies(self.elems()))]
     unsafe fn sift_down(&mut self, pos: usize) -> usize {
         let len = self.len();
         // SAFETY: pos < len is guaranteed by the caller and
@@ -893,6 +915,8 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
     /// # Safety
     ///
     /// The caller must guarantee that `pos < self.len()`.
+    #[requires(pos < self.len())]
+    #[cfg_attr(kani, kani::modifies(self.elems()))]
     unsafe fn sift_down_to_bottom(&mut self, mut pos: usize) {
         let end = self.len();
         let start = pos;
@@ -902,6 +926,9 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
         let mut child = 2 * hole.pos() + 1;
 
         // Loop invariant: child == 2 * hole.pos() + 1.
+        #[safety::loop_invariant(start <= hole.pos && hole.pos < end && end == hole.data.len()
+            && hole.pos < child && child - hole.pos == hole.pos + 1)]
+        #[cfg_attr(kani, kani::loop_modifies(&hole.pos, &hole.elt, &child, hole.slots()))]
         while child <= end.saturating_sub(2) {
             // SAFETY: child < end - 1 < self.len() and
             //  child + 1 < end <= self.len(), so they're valid indexes.
@@ -959,6 +986,8 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
         if better_to_rebuild {
             self.rebuild();
         } else {
+            #[safety::loop_invariant(self.data.len() == on_entry(self.data.len()))]
+            #[cfg_attr(kani, kani::loop_modifies(self.elems()))]
             for i in start..self.len() {
                 // SAFETY: The index `i` is always less than self.len().
                 unsafe { self.sift_up(0, i) };
@@ -968,6 +997,9 @@ impl<T: Ord, A: Allocator> BinaryHeap<T, A> {
 
     fn rebuild(&mut self) {
         let mut n = self.len() / 2;
+        #[safety::loop_invariant(n <= self.data.len() / 2)]
+        #[cfg_attr(kani, kani::loop_modifies(&n, self.elems()))]
+        #[cfg_attr(kani, kani::loop_decreases(n))]
         while n > 0 {
             n -= 1;
             // SAFETY: n starts from self.len() / 2 and goes down to 0.
@@ -1524,6 +1556,20 @@ impl<T, A: Allocator> BinaryHeap<T, A> {
     }
 }
 
+#[cfg(kani)]
+impl<T, A: Allocator> BinaryHeap<T, A> {
+    fn elems(&self) -> *const [T] {
+        ptr::slice_from_raw_parts(self.data.as_ptr(), self.data.len())
+    }
+}
+
+#[cfg(kani)]
+impl<T> Hole<'_, T> {
+    fn slots(&self) -> *const [T] {
+        ptr::slice_from_raw_parts(self.data.as_ptr(), self.data.len())
+    }
+}
+
 /// Hole represents a hole in a slice i.e., an index without valid value
 /// (because it was moved from or duplicated).
 /// In drop, `Hole` will restore the slice by filling the hole
@@ -1541,6 +1587,8 @@ impl<'a, T> Hole<'a, T> {
     ///
     /// `pos` must be within the data slice.
     #[inline]
+    #[requires(pos < data.len())]
+    #[ensures(|hole: &Self| hole.pos == pos)]
     unsafe fn new(data: &'a mut [T], pos: usize) -> Self {
         debug_assert!(pos < data.len());
         // SAFETY: Caller ensures pos is inside the slice.
@@ -1565,6 +1613,8 @@ impl<'a, T> Hole<'a, T> {
     ///
     /// `index` must be within the data slice and not equal to the current position.
     #[inline]
+    #[requires(index < self.data.len() && index != self.pos)]
+    #[ensures(|elem: &&T| ptr::eq(*elem, self.data.as_ptr().wrapping_add(index)))]
     unsafe fn get(&self, index: usize) -> &T {
         debug_assert!(index != self.pos);
         debug_assert!(index < self.data.len());
@@ -1578,6 +1628,10 @@ impl<'a, T> Hole<'a, T> {
     ///
     /// `index` must be within the data slice and not equal to the current position.
     #[inline]
+    #[requires(self.pos < self.data.len())]
+    #[requires(index < self.data.len() && index != self.pos)]
+    #[ensures(|_| self.pos == index)]
+    #[cfg_attr(kani, kani::modifies(&self.pos, self.slots()))]
     unsafe fn move_to(&mut self, index: usize) {
         debug_assert!(index != self.pos);
         debug_assert!(index < self.data.len());
@@ -2079,5 +2133,813 @@ impl<'a, T: 'a + Ord + Copy, A: Allocator> Extend<&'a T> for BinaryHeap<T, A> {
     #[inline]
     fn extend_reserve(&mut self, additional: usize) {
         self.reserve(additional);
+    }
+}
+
+#[cfg(kani)]
+#[unstable(feature = "kani", issue = "none")]
+mod verify {
+    use core::cell::Cell;
+    use core::cmp::Ordering;
+    use core::kani;
+
+    use super::*;
+
+    // The largest allocation CBMC can address with the `--object-bits 12` that CI passes.
+    const MAX_ALLOCATION_BYTES: usize = 1 << 48;
+
+    // The longest range a sift-down can take without `2 * pos + 1` overflowing.
+    const MAX_SIFT_DOWN_END: usize = isize::MAX as usize + 1;
+
+    // `BinaryHeap` doesn't require `Ord` to be consistent, so each comparison gets any result.
+    fn arbitrary_ordering() -> Ordering {
+        match kani::any::<u8>() % 3 {
+            0 => Ordering::Less,
+            1 => Ordering::Equal,
+            _ => Ordering::Greater,
+        }
+    }
+
+    macro_rules! define_element {
+        ($(#[$attr:meta])* $name:ident($inner:ty)) => {
+            $(#[$attr])*
+            #[derive(PartialEq, Eq)]
+            pub(super) struct $name($inner);
+
+            impl PartialOrd for $name {
+                fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                    Some(self.cmp(other))
+                }
+            }
+
+            impl Ord for $name {
+                fn cmp(&self, _other: &Self) -> Ordering {
+                    arbitrary_ordering()
+                }
+            }
+
+            impl kani::Arbitrary for $name {
+                fn any() -> Self {
+                    $name(kani::any())
+                }
+            }
+        };
+    }
+
+    // `Byte`: an ordinary element.
+    define_element!(Byte(u8));
+
+    // `ZeroSized`: the only way to get a heap longer than `isize::MAX`.
+    define_element!(ZeroSized([u8; 0]));
+
+    fn zeroed_vec<T>(cap: usize) -> Vec<T> {
+        if cap == 0 || size_of::<T>() == 0 {
+            return Vec::new();
+        }
+        let layout = core::alloc::Layout::array::<T>(cap).unwrap();
+        // SAFETY: the layout has a non-zero size.
+        let buffer = unsafe { crate::alloc::alloc_zeroed(layout) };
+        if buffer.is_null() {
+            crate::alloc::handle_alloc_error(layout);
+        }
+        // SAFETY: allocated by the global allocator with the layout of `[T; cap]`.
+        unsafe { Vec::from_raw_parts(buffer.cast::<T>(), 0, cap) }
+    }
+
+    fn arbitrary_heap<T: Ord>() -> BinaryHeap<T> {
+        let max_len = if size_of::<T>() == 0 {
+            usize::MAX
+        } else {
+            MAX_ALLOCATION_BYTES / size_of::<T>()
+        };
+        let cap: usize = kani::any_where(|c: &usize| *c <= max_len);
+        let mut data: Vec<T> = zeroed_vec(cap);
+        let len: usize = kani::any_where(|l: &usize| *l <= data.capacity() && *l <= max_len);
+        // SAFETY: `len <= capacity`, and the allocator zeroed the buffer, which is a valid
+        // value of every element type used here.
+        unsafe { data.set_len(len) };
+        // SAFETY: the contents aren't a max-heap, which is the point.
+        unsafe { BinaryHeap::from_raw_vec(data) }
+    }
+
+    fn drop_or_forget<T>(heap: BinaryHeap<T>) {
+        if mem::needs_drop::<T>() { mem::forget(heap) } else { drop(heap) }
+    }
+
+    // `BinaryHeap<T>` is generic, but Kani can only verify a concrete `T`. Harnesses are run
+    // across several element types, each picked because it makes the heap code behave
+    // differently. Between them they cover every way the heap code depends on `T`, apart
+    // from panics, which Kani doesn't unwind.
+    mod per_element_type {
+        use super::*;
+
+        // `OverAligned`: catches misaligned pointers.
+        define_element!(
+            #[repr(align(16))]
+            OverAligned(u8)
+        );
+
+        // `NeedsDrop`: dropping one fails the proof, so no function under test may drop an element.
+        define_element!(NeedsDrop(u8));
+        impl Drop for NeedsDrop {
+            fn drop(&mut self) {
+                panic!("an element was dropped");
+            }
+        }
+
+        // `MutatedByCmp`: `cmp` mutates the operands (the heap can't require `cmp` to be pure).
+        #[derive(PartialEq, Eq)]
+        pub(super) struct MutatedByCmp(Cell<u32>);
+        impl PartialOrd for MutatedByCmp {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for MutatedByCmp {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.0.set(kani::any());
+                other.0.set(kani::any());
+                arbitrary_ordering()
+            }
+        }
+        impl kani::Arbitrary for MutatedByCmp {
+            fn any() -> Self {
+                MutatedByCmp(Cell::new(kani::any()))
+            }
+        }
+
+        fn rebuild_tail_overflows(len: usize, start: usize) -> bool {
+            if start == len {
+                return false;
+            }
+            let tail_len = len - start;
+            if start < tail_len {
+                len > MAX_SIFT_DOWN_END
+            } else if len <= 2048 {
+                false
+            } else {
+                len > isize::MAX as usize || tail_len > usize::MAX / 11
+            }
+        }
+
+        #[derive(Clone, Copy, PartialEq)]
+        enum Ending {
+            Pop,
+            Refresh,
+            Drop,
+            Leak,
+        }
+
+        fn arbitrary_ending() -> Ending {
+            match kani::any::<u8>() % 4 {
+                0 => Ending::Pop,
+                1 => Ending::Refresh,
+                2 => Ending::Drop,
+                _ => Ending::Leak,
+            }
+        }
+
+        fn peek_mut_then<T: Ord + kani::Arbitrary>(ending: Ending) {
+            let mut heap = arbitrary_heap::<T>();
+            let len = heap.len();
+            kani::assume(len <= MAX_SIFT_DOWN_END);
+            let mutated: bool = kani::any();
+            let popped = match heap.peek_mut() {
+                None => false,
+                Some(mut top) => {
+                    let _ = &*top;
+                    if mutated {
+                        mem::forget(mem::replace(&mut *top, kani::any()));
+                    }
+                    match ending {
+                        Ending::Pop => {
+                            mem::forget(PeekMut::pop(top));
+                            true
+                        }
+                        Ending::Refresh => {
+                            let _ = top.refresh();
+                            false
+                        }
+                        Ending::Drop => false,
+                        Ending::Leak => {
+                            mem::forget(top);
+                            false
+                        }
+                    }
+                }
+            };
+            let leaked = ending == Ending::Leak && mutated && len > 1;
+            assert!(heap.len() == if popped { len - 1 } else if leaked { 1 } else { len });
+            if leaked {
+                let last = heap.pop();
+                assert!(last.is_some() && heap.is_empty());
+                mem::forget(last);
+            }
+            kani::cover(len == 0, "no elements");
+            kani::cover(len > 2 && mutated && ending == Ending::Pop, "pop after a mutable peek");
+            kani::cover(len > 2 && mutated && ending == Ending::Refresh, "refresh after one");
+            kani::cover(len > 2 && mutated && ending == Ending::Drop, "drop after one");
+            kani::cover(len > 2 && mutated && ending == Ending::Leak, "leak after one");
+            kani::cover(len > 2 && !mutated && ending == Ending::Drop, "drop after a shared peek");
+            drop_or_forget(heap);
+        }
+
+        // `Hole::new` at any position its contract allows.
+        macro_rules! check_hole_new {
+            ($T:ty) => {
+                #[kani::proof_for_contract(Hole::<$T>::new)]
+                fn check_hole_new() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let pos: usize = kani::any();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    drop(unsafe { Hole::new(&mut heap.data, pos) });
+                    kani::cover(pos > 1_000_000, "hole far from the start");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `Hole::get` at any index its contract allows.
+        macro_rules! check_hole_get {
+            ($T:ty) => {
+                #[kani::proof_for_contract(Hole::<$T>::get)]
+                fn check_hole_get() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    // SAFETY: the position is below `len`.
+                    let hole = unsafe { Hole::new(&mut heap.data, kani::any_where(|p| *p < len)) };
+                    let index: usize = kani::any();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    let _ = unsafe { hole.get(index) };
+                    kani::cover(index < hole.pos(), "index below the hole");
+                    kani::cover(index > hole.pos() && index + 1 == len, "index at the end");
+                    drop(hole);
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `Hole::move_to` swaps the hole with the element at any index its contract allows.
+        macro_rules! check_hole_move_to {
+            ($T:ty) => {
+                #[kani::proof_for_contract(Hole::<$T>::move_to)]
+                fn check_hole_move_to() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    let index: usize = kani::any_where(|i| *i < len);
+                    let moved: $T = kani::any();
+                    let value = moved.0;
+                    mem::forget(mem::replace(&mut heap.data[index], moved));
+                    // SAFETY: the position is below `len`.
+                    let mut hole =
+                        unsafe { Hole::new(&mut heap.data, kani::any_where(|p| *p < len)) };
+                    let from = hole.pos();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    unsafe { hole.move_to(index) };
+                    assert!(hole.pos() == index);
+                    kani::cover(index < from, "move towards the start");
+                    kani::cover(index + 1 == len && len > 1_000_000, "move to the end");
+                    drop(hole);
+                    assert!(heap.data[from].0 == value);
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // Dropping a `Hole` writes back the element it took out, whether or not the hole moved.
+        macro_rules! check_hole_fills_on_drop {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_hole_fills_on_drop() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    let start: usize = kani::any_where(|p| *p < len);
+                    let held: $T = kani::any();
+                    let value = held.0;
+                    mem::forget(mem::replace(&mut heap.data[start], held));
+                    // SAFETY: the position is below `len`.
+                    let mut hole = unsafe { Hole::new(&mut heap.data, start) };
+                    let moved: bool = kani::any();
+                    if moved {
+                        // SAFETY: in bounds, and not the hole.
+                        unsafe { hole.move_to(kani::any_where(|i| *i < len && *i != start)) };
+                    }
+                    let pos = hole.pos();
+                    drop(hole);
+                    assert!(heap.len() == len);
+                    assert!(heap.data[pos].0 == value);
+                    kani::cover(!moved && pos == 0, "filled where it was made");
+                    kani::cover(moved && pos + 1 == len && len > 1_000_000, "filled at the end");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `sift_up` for any `start` and `pos` its contract allows.
+        macro_rules! check_sift_up {
+            ($T:ty) => {
+                #[kani::proof_for_contract(BinaryHeap::<$T>::sift_up)]
+                fn check_sift_up() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let start: usize = kani::any();
+                    let pos: usize = kani::any();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    let new_pos = unsafe { heap.sift_up(start, pos) };
+                    kani::cover(new_pos == pos && pos > start, "already in order");
+                    kani::cover(start > pos, "start past pos: nothing to do");
+                    kani::cover(
+                        new_pos == start && pos >= 2 && start <= pos - 2,
+                        "moved up to start",
+                    );
+                    kani::cover(pos - new_pos >= 2, "hole moved at least two levels");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `sift_down_range` for any `pos` and `end` its contract allows.
+        macro_rules! check_sift_down_range {
+            ($T:ty) => {
+                #[kani::proof_for_contract(BinaryHeap::<$T>::sift_down_range)]
+                fn check_sift_down_range() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let pos: usize = kani::any();
+                    let end: usize = kani::any_where(|e: &usize| *e <= MAX_SIFT_DOWN_END);
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    let new_pos = unsafe { heap.sift_down_range(pos, end) };
+                    kani::cover(new_pos == pos && end - pos > pos + 2, "already in order");
+                    kani::cover(
+                        new_pos > pos && new_pos + 1 == end && new_pos % 2 == 1,
+                        "last only child"
+                    );
+                    kani::cover(new_pos - pos >= pos + 3, "hole moved at least two levels");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `sift_down` from any position its contract allows.
+        macro_rules! check_sift_down {
+            ($T:ty) => {
+                #[kani::proof_for_contract(BinaryHeap::<$T>::sift_down)]
+                fn check_sift_down() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    kani::assume(heap.len() <= MAX_SIFT_DOWN_END);
+                    let pos: usize = kani::any();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    let new_pos = unsafe { heap.sift_down(pos) };
+                    let len = heap.len();
+                    kani::cover(new_pos == pos && len - pos > pos + 2, "already in order");
+                    kani::cover(
+                        new_pos > pos && new_pos + 1 == len && new_pos % 2 == 1,
+                        "last only child"
+                    );
+                    kani::cover(new_pos - pos >= pos + 3, "hole moved at least two levels");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `sift_down_to_bottom` from any position its contract allows.
+        macro_rules! check_sift_down_to_bottom {
+            ($T:ty) => {
+                #[kani::proof_for_contract(BinaryHeap::<$T>::sift_down_to_bottom)]
+                fn check_sift_down_to_bottom() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    kani::assume(heap.len() <= MAX_SIFT_DOWN_END);
+                    let pos: usize = kani::any();
+                    // SAFETY: `proof_for_contract` assumes the precondition.
+                    unsafe { heap.sift_down_to_bottom(pos) };
+                    let len = heap.len();
+                    kani::cover(len - pos == pos + 2, "last only child");
+                    kani::cover(len - pos <= pos + 1, "already at the bottom");
+                    kani::cover(len > 1_000_000, "large heap");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `push` onto a heap of any length and capacity.
+        macro_rules! check_push {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_push() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    let cap = heap.capacity();
+                    kani::assume(len < usize::MAX);
+                    heap.push(kani::any());
+                    assert!(heap.len() == len + 1);
+                    kani::cover(len > 1_000_000, "large heap");
+                    kani::cover(cap == 0, "push allocates");
+                    kani::cover(cap == len && len > 0, "push reallocates");
+                    kani::cover(cap > len, "push within capacity");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `pop` from a heap of any length, including an empty one.
+        macro_rules! check_pop {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_pop() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len.saturating_sub(1) <= MAX_SIFT_DOWN_END);
+                    let top = heap.pop();
+                    assert!(top.is_some() == (len > 0) && heap.len() == len.saturating_sub(1));
+                    kani::cover(len == 0, "no elements");
+                    kani::cover(len == 1, "only element");
+                    kani::cover(len > 1_000_000, "large heap");
+                    mem::forget(top);
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `peek_mut`, maybe a write to the top, then any of the four ways a `PeekMut` can end.
+        macro_rules! check_peek_mut {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_peek_mut() {
+                    peek_mut_then::<$T>(arbitrary_ending());
+                }
+            };
+        }
+
+        // A `PeekMut` derefs to the first element, before and after a mutable deref.
+        macro_rules! check_peek_mut_read {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_peek_mut_read() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    let first = heap.data.as_ptr();
+                    let shortened: bool = kani::any();
+                    if let Some(mut top) = heap.peek_mut() {
+                        if shortened {
+                            let _: &mut $T = &mut *top;
+                        }
+                        let peeked: &$T = &*top;
+                        assert!(ptr::eq(peeked, first));
+                        mem::forget(top);
+                    }
+                    assert!(heap.len() == if shortened && len > 1 { 1 } else { len });
+                    kani::cover(len == 1, "single element");
+                    kani::cover(len > 1_000_000 && shortened, "large heap after deref_mut");
+                    kani::cover(len > 1_000_000 && !shortened, "large heap before deref_mut");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `rebuild` on a heap of any length.
+        macro_rules! check_rebuild {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_rebuild() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len <= MAX_SIFT_DOWN_END);
+                    heap.rebuild();
+                    assert!(heap.len() == len);
+                    kani::cover(len > 1_000_000, "large heap");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `rebuild_tail` from any `start`, whichever strategy it picks.
+        macro_rules! check_rebuild_tail {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_rebuild_tail() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    let start: usize = kani::any_where(|s: &usize| *s <= len);
+                    kani::assume(!rebuild_tail_overflows(len, start));
+                    heap.rebuild_tail(start);
+                    assert!(heap.len() == len);
+                    kani::cover(start < len - start, "rebuild strategy");
+                    kani::cover(start >= len / 2 && len - start >= 2, "sift_up strategy");
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `append` of two heaps of any lengths.
+        macro_rules! check_append {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_append() {
+                    let mut a = arbitrary_heap::<$T>();
+                    let mut b = arbitrary_heap::<$T>();
+                    let (a_len, b_len) = (a.len(), b.len());
+                    kani::assume(a_len.checked_add(b_len).is_some_and(|total| {
+                        !rebuild_tail_overflows(total, if a_len < b_len { b_len } else { a_len })
+                    }));
+                    a.append(&mut b);
+                    assert!(a.len() == a_len + b_len && b.is_empty());
+                    kani::cover(a_len < b_len && a_len > 0, "swapped before appending");
+                    kani::cover(a_len >= b_len && b_len > 0, "appended without swapping");
+                    kani::cover(b_len == 0, "second heap empty");
+                    drop_or_forget(a);
+                    drop_or_forget(b);
+                }
+            };
+        }
+
+        // `From<Vec<T>>` on a vector of any length.
+        macro_rules! check_from_vec {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_from_vec() {
+                    let heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len <= MAX_SIFT_DOWN_END);
+                    let rebuilt = BinaryHeap::from(heap.into_vec());
+                    assert!(rebuilt.len() == len);
+                    kani::cover(len > 1_000_000, "large heap");
+                    drop_or_forget(rebuilt);
+                }
+            };
+        }
+
+        // `into_sorted_vec` on a heap of any length.
+        macro_rules! check_into_sorted_vec {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_into_sorted_vec() {
+                    let heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len.saturating_sub(1) <= MAX_SIFT_DOWN_END);
+                    let sorted = heap.into_sorted_vec();
+                    assert!(sorted.len() == len);
+                    kani::cover(len <= 1, "nothing to sort");
+                    kani::cover(len > 1_000_000, "large heap");
+                    drop_or_forget(BinaryHeap { data: sorted });
+                }
+            };
+        }
+
+        // `as_mut_slice`, a write through the slice, then a `pop`.
+        macro_rules! check_as_mut_slice {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_as_mut_slice() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len.saturating_sub(1) <= MAX_SIFT_DOWN_END);
+                    // SAFETY: `as_mut_slice` only asks for heap order, which is broken on purpose.
+                    let slice = unsafe { heap.as_mut_slice() };
+                    assert!(slice.len() == len);
+                    if len > 0 {
+                        let slot = &mut slice[kani::any_where(|i: &usize| *i < len)];
+                        mem::forget(mem::replace(slot, kani::any()));
+                    }
+                    let top = heap.pop();
+                    assert!(top.is_some() == (len > 0));
+                    kani::cover(len > 1_000_000, "large heap");
+                    mem::forget(top);
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        // `into_iter_sorted`: one `next`, with `size_hint` before and after.
+        macro_rules! check_into_iter_sorted {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_into_iter_sorted() {
+                    let heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len.saturating_sub(1) <= MAX_SIFT_DOWN_END);
+                    let mut iter = heap.into_iter_sorted();
+                    assert!(iter.size_hint() == (len, Some(len)));
+                    let item = iter.next();
+                    assert!(item.is_some() == (len > 0));
+                    let rest = len.saturating_sub(1);
+                    assert!(iter.size_hint() == (rest, Some(rest)));
+                    kani::cover(len == 0, "no elements");
+                    kani::cover(len > 1_000_000, "large heap");
+                    mem::forget(item);
+                    drop_or_forget(iter.inner);
+                }
+            };
+        }
+
+        // `drain_sorted`: one `next`, with `size_hint` before and after, then a leak.
+        macro_rules! check_drain_sorted {
+            ($T:ty) => {
+                #[kani::proof]
+                fn check_drain_sorted() {
+                    let mut heap = arbitrary_heap::<$T>();
+                    let len = heap.len();
+                    kani::assume(len.saturating_sub(1) <= MAX_SIFT_DOWN_END);
+                    let mut drain = heap.drain_sorted();
+                    assert!(drain.size_hint() == (len, Some(len)));
+                    let item = drain.next();
+                    assert!(item.is_some() == (len > 0));
+                    let rest = len.saturating_sub(1);
+                    assert!(drain.size_hint() == (rest, Some(rest)));
+                    mem::forget(drain);
+                    assert!(heap.len() == rest);
+                    kani::cover(len == 0, "no elements");
+                    kani::cover(len > 1_000_000, "large heap");
+                    mem::forget(item);
+                    drop_or_forget(heap);
+                }
+            };
+        }
+
+        macro_rules! harnesses_for {
+            ($T:ty) => {
+                check_hole_new!($T);
+                check_hole_get!($T);
+                check_hole_move_to!($T);
+                check_hole_fills_on_drop!($T);
+                check_sift_up!($T);
+                check_sift_down_range!($T);
+                check_sift_down!($T);
+                check_sift_down_to_bottom!($T);
+                check_push!($T);
+                check_pop!($T);
+                check_peek_mut!($T);
+                check_peek_mut_read!($T);
+                check_rebuild!($T);
+                check_rebuild_tail!($T);
+                check_append!($T);
+                check_from_vec!($T);
+                check_into_sorted_vec!($T);
+                check_as_mut_slice!($T);
+                check_into_iter_sorted!($T);
+                check_drain_sorted!($T);
+            };
+        }
+
+        mod byte {
+            use super::*;
+            harnesses_for!(Byte);
+        }
+
+        mod over_aligned {
+            use super::*;
+            harnesses_for!(OverAligned);
+        }
+
+        mod needs_drop {
+            use super::*;
+            harnesses_for!(NeedsDrop);
+
+            // Dropping an element does fail a proof.
+            #[kani::proof]
+            #[kani::should_panic]
+            fn check_dropping_an_element_panics() {
+                let mut heap = arbitrary_heap::<NeedsDrop>();
+                kani::assume(heap.len() > 0 && heap.len() <= MAX_SIFT_DOWN_END);
+                drop(heap.pop());
+            }
+        }
+
+        mod zero_sized {
+            use super::*;
+            harnesses_for!(ZeroSized);
+        }
+
+        // A mutating `cmp` only matters where elements are compared, so only those harnesses run.
+        mod mutated_by_cmp {
+            use super::*;
+            check_sift_up!(MutatedByCmp);
+            check_sift_down_range!(MutatedByCmp);
+            check_sift_down!(MutatedByCmp);
+            check_sift_down_to_bottom!(MutatedByCmp);
+            check_push!(MutatedByCmp);
+            check_pop!(MutatedByCmp);
+            check_rebuild!(MutatedByCmp);
+            check_rebuild_tail!(MutatedByCmp);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    fn check_sift_up_past_end_panics() {
+        let mut heap = arbitrary_heap::<Byte>();
+        let len = heap.len();
+        // SAFETY: deliberately unsound. `pos == len` breaks the precondition, and Kani must
+        // catch it.
+        let _ = unsafe { heap.sift_up(0, len) };
+        drop_or_forget(heap);
+    }
+
+    // A `ZeroSized` heap can be longer than `isize::MAX`, where child indices overflow. These
+    // harnesses show the code panics when that happens.
+    mod zero_sized_overflow {
+        use super::*;
+
+        // The first child index, `2 * pos + 1`, overflows when `pos > isize::MAX`.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_sift_down_range_first_child_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            let len = heap.len();
+            let pos: usize = kani::any_where(|p: &usize| *p > isize::MAX as usize);
+            let end: usize = kani::any_where(|e: &usize| *e > pos && *e <= len);
+            // SAFETY: `pos < end <= len`.
+            let _ = unsafe { heap.sift_down_range(pos, end) };
+        }
+
+        // From a lower `pos`, the hole can descend to where its child index overflows.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_sift_down_range_later_child_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            let len = heap.len();
+            let end: usize = kani::any_where(|e: &usize| *e > MAX_SIFT_DOWN_END && *e <= len);
+            let pos: usize = kani::any_where(|p: &usize| *p <= isize::MAX as usize);
+            // SAFETY: `pos < end <= len`.
+            let _ = unsafe { heap.sift_down_range(pos, end) };
+        }
+
+        // `sift_down_to_bottom` descends to the end, so its child index overflows too.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_sift_down_to_bottom_child_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            let len = heap.len();
+            kani::assume(len > MAX_SIFT_DOWN_END);
+            let pos: usize = kani::any_where(|p: &usize| *p < len);
+            // SAFETY: `pos < len`.
+            unsafe { heap.sift_down_to_bottom(pos) };
+        }
+
+        // `pop` sifts down through the `len - 1` elements that remain.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_pop_child_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            kani::assume(heap.len() > MAX_SIFT_DOWN_END + 1);
+            let _ = heap.pop();
+        }
+
+        // `rebuild` sifts down from positions in the first half of the heap.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_rebuild_child_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            kani::assume(heap.len() > MAX_SIFT_DOWN_END);
+            heap.rebuild();
+        }
+
+        // `into_sorted_vec` sifts down through a range that starts at `len - 1`.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_into_sorted_vec_child_overflows() {
+            let heap = arbitrary_heap::<ZeroSized>();
+            kani::assume(heap.len() > MAX_SIFT_DOWN_END + 1);
+            let _ = heap.into_sorted_vec();
+        }
+
+        // `rebuild_tail` computes `2 * len` to pick a strategy.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_rebuild_tail_doubled_len_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            let len = heap.len();
+            kani::assume(len > isize::MAX as usize);
+            let start: usize = kani::any_where(|s: &usize| *s < len && *s >= len - *s);
+            heap.rebuild_tail(start);
+        }
+
+        // `rebuild_tail` computes `tail_len * 11` to pick a strategy.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_rebuild_tail_weighted_tail_overflows() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            let len = heap.len();
+            kani::assume(len <= isize::MAX as usize);
+            let start: usize = kani::any_where(|s: &usize| *s < len && *s >= len - *s);
+            kani::assume(len - start > usize::MAX / 11);
+            heap.rebuild_tail(start);
+        }
+
+        // A vector of `usize::MAX` elements can't grow.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_push_full_panics() {
+            let mut heap = arbitrary_heap::<ZeroSized>();
+            kani::assume(heap.len() == usize::MAX);
+            heap.push(kani::any());
+        }
+
+        // The combined length of two heaps can exceed `usize::MAX`.
+        #[kani::proof]
+        #[kani::should_panic]
+        fn check_append_total_len_overflows() {
+            let mut a = arbitrary_heap::<ZeroSized>();
+            let mut b = arbitrary_heap::<ZeroSized>();
+            kani::assume(a.len().checked_add(b.len()).is_none());
+            a.append(&mut b);
+        }
     }
 }
