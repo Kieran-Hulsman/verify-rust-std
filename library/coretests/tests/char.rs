@@ -304,6 +304,21 @@ fn test_escape_debug() {
 }
 
 #[test]
+fn test_escape_display_after_next() {
+    for c in ['a', '\u{e9}', '\n', '\u{301}', '\0'] {
+        let mut e = c.escape_debug();
+        e.next();
+        assert_eq!(e.to_string(), e.clone().collect::<String>());
+        let mut e = c.escape_default();
+        e.next();
+        assert_eq!(e.to_string(), e.clone().collect::<String>());
+        let mut e = c.escape_unicode();
+        e.next();
+        assert_eq!(e.to_string(), e.clone().collect::<String>());
+    }
+}
+
+#[test]
 fn test_escape_default() {
     fn string(c: char) -> String {
         let iter: String = c.escape_default().collect();
